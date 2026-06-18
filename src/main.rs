@@ -342,11 +342,7 @@ impl KeybindEntry {
         let idx = self.action_drop.selected() as usize;
         let action = KB_DISPATCHERS.get(idx).copied().unwrap_or("exec");
         let args = self.args_entry.text();
-        Some(format!(
-            "{}|{key}|{action}|{}",
-            mods.join(" "),
-            args.trim()
-        ))
+        Some(format!("{}|{key}|{action}|{}", mods.join(" "), args.trim()))
     }
 }
 
@@ -549,6 +545,1100 @@ fn make_keybind_builder(
     group.set_header_suffix(Some(&add_btn));
     group.add(&list);
 
+    (group, builder)
+}
+
+fn clear_listbox(list: &gtk::ListBox) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+}
+
+fn pill_delete_button() -> gtk::Button {
+    gtk::Button::builder()
+        .icon_name("list-remove-symbolic")
+        .css_classes(["flat", "circular"])
+        .valign(gtk::Align::Center)
+        .build()
+}
+
+fn tiny_entry(text: &str, placeholder: &str, hexpand: bool) -> gtk::Entry {
+    gtk::Entry::builder()
+        .text(text)
+        .placeholder_text(placeholder)
+        .hexpand(hexpand)
+        .css_classes(["config-entry"])
+        .build()
+}
+
+fn mods_from_text(value: &str) -> Vec<&str> {
+    value.split_whitespace().collect()
+}
+
+fn make_mod_buttons(
+    mods: &[&str],
+) -> (
+    gtk::ToggleButton,
+    gtk::ToggleButton,
+    gtk::ToggleButton,
+    gtk::ToggleButton,
+    gtk::Box,
+) {
+    let mk = |label: &str| {
+        gtk::ToggleButton::builder()
+            .label(label)
+            .active(mods.contains(&label))
+            .css_classes(["mod-key"])
+            .build()
+    };
+    let super_btn = mk("SUPER");
+    let shift_btn = mk("SHIFT");
+    let ctrl_btn = mk("CTRL");
+    let alt_btn = mk("ALT");
+    let box_mods = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(3)
+        .build();
+    for btn in [&super_btn, &shift_btn, &ctrl_btn, &alt_btn] {
+        box_mods.append(btn);
+    }
+    (super_btn, shift_btn, ctrl_btn, alt_btn, box_mods)
+}
+
+fn selected_mods(
+    super_btn: &gtk::ToggleButton,
+    shift_btn: &gtk::ToggleButton,
+    ctrl_btn: &gtk::ToggleButton,
+    alt_btn: &gtk::ToggleButton,
+) -> String {
+    let mut mods = Vec::new();
+    if super_btn.is_active() {
+        mods.push("SUPER");
+    }
+    if shift_btn.is_active() {
+        mods.push("SHIFT");
+    }
+    if ctrl_btn.is_active() {
+        mods.push("CTRL");
+    }
+    if alt_btn.is_active() {
+        mods.push("ALT");
+    }
+    mods.join(" ")
+}
+
+#[derive(Clone)]
+struct EnvEntry {
+    row: gtk::ListBoxRow,
+    key: gtk::Entry,
+    value: gtk::Entry,
+}
+
+impl EnvEntry {
+    fn value(&self) -> Option<String> {
+        let key = self.key.text().trim().to_string();
+        if key.is_empty() {
+            return None;
+        }
+        Some(format!("{},{}", key, self.value.text().trim()))
+    }
+}
+
+#[derive(Clone)]
+struct EnvBuilder {
+    list: gtk::ListBox,
+    entries: Rc<RefCell<Vec<EnvEntry>>>,
+}
+
+impl EnvBuilder {
+    fn values(&self) -> Vec<String> {
+        self.entries
+            .borrow()
+            .iter()
+            .filter_map(|e| e.value())
+            .collect()
+    }
+    fn set_values(&self, values: &[String]) {
+        self.entries.borrow_mut().clear();
+        clear_listbox(&self.list);
+        let source = if values.is_empty() {
+            vec![String::new()]
+        } else {
+            values.to_vec()
+        };
+        for val in source {
+            self.add_value(&val);
+        }
+    }
+    fn add_value(&self, value: &str) {
+        let entry = make_env_entry(value, self.list.clone(), self.entries.clone());
+        self.list.append(&entry.row);
+        self.entries.borrow_mut().push(entry);
+    }
+}
+
+fn make_env_entry(
+    initial: &str,
+    list: gtk::ListBox,
+    entries: Rc<RefCell<Vec<EnvEntry>>>,
+) -> EnvEntry {
+    let (k, v) = initial.split_once(',').unwrap_or((initial, ""));
+    let key = tiny_entry(k.trim(), "KEY", false);
+    key.set_width_chars(22);
+    let value = tiny_entry(v.trim(), "value", true);
+    let del = pill_delete_button();
+    let row_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(10)
+        .margin_bottom(10)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    row_box.append(&key);
+    row_box.append(&value);
+    row_box.append(&del);
+    let row = gtk::ListBoxRow::builder()
+        .child(&row_box)
+        .activatable(false)
+        .selectable(false)
+        .build();
+    let entry = EnvEntry {
+        row: row.clone(),
+        key,
+        value,
+    };
+    let list_d = list.clone();
+    let entries_d = entries.clone();
+    let row_d = row.clone();
+    del.connect_clicked(move |_| {
+        list_d.remove(&row_d);
+        entries_d.borrow_mut().retain(|e| e.row != row_d);
+    });
+    entry
+}
+
+fn make_env_builder(title: &str, initial: &[String]) -> (adw::PreferencesGroup, EnvBuilder) {
+    let entries = Rc::new(RefCell::new(Vec::new()));
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .build();
+    let builder = EnvBuilder {
+        list: list.clone(),
+        entries: entries.clone(),
+    };
+    builder.set_values(initial);
+    let add = gtk::Button::builder()
+        .icon_name("list-add-symbolic")
+        .tooltip_text("Add env var")
+        .css_classes(["flat"])
+        .build();
+    let b = builder.clone();
+    add.connect_clicked(move |_| b.add_value(""));
+    let group = adw::PreferencesGroup::builder()
+        .title(title)
+        .description("Set environment variables as KEY + value.")
+        .build();
+    group.set_header_suffix(Some(&add));
+    group.add(&list);
+    (group, builder)
+}
+
+#[derive(Clone)]
+struct MonitorEntry {
+    row: gtk::ListBoxRow,
+    output: gtk::Entry,
+    mode: gtk::Entry,
+    position: gtk::Entry,
+    scale: gtk::SpinButton,
+    disabled: gtk::Switch,
+}
+
+impl MonitorEntry {
+    fn value(&self) -> Option<String> {
+        let output = self.output.text().trim().to_string();
+        if output.is_empty() {
+            return None;
+        }
+        if self.disabled.is_active() {
+            return Some(format!("{},disabled", output));
+        }
+        let mode = self.mode.text().trim().to_string();
+        let mode = if mode.is_empty() {
+            "preferred".to_string()
+        } else {
+            mode
+        };
+        let pos = self.position.text().trim().to_string();
+        let pos = if pos.is_empty() {
+            "0x0".to_string()
+        } else {
+            pos
+        };
+        Some(format!(
+            "{},{},{},{:.1}",
+            output,
+            mode,
+            pos,
+            self.scale.value()
+        ))
+    }
+}
+
+#[derive(Clone)]
+struct MonitorBuilder {
+    list: gtk::ListBox,
+    entries: Rc<RefCell<Vec<MonitorEntry>>>,
+}
+
+impl MonitorBuilder {
+    fn values(&self) -> Vec<String> {
+        self.entries
+            .borrow()
+            .iter()
+            .filter_map(|e| e.value())
+            .collect()
+    }
+    fn set_values(&self, values: &[String]) {
+        self.entries.borrow_mut().clear();
+        clear_listbox(&self.list);
+        let source = if values.is_empty() {
+            vec![String::new()]
+        } else {
+            values.to_vec()
+        };
+        for val in source {
+            self.add_value(&val);
+        }
+    }
+    fn add_value(&self, value: &str) {
+        let entry = make_monitor_entry(value, self.list.clone(), self.entries.clone());
+        self.list.append(&entry.row);
+        self.entries.borrow_mut().push(entry);
+    }
+}
+
+fn make_monitor_entry(
+    initial: &str,
+    list: gtk::ListBox,
+    entries: Rc<RefCell<Vec<MonitorEntry>>>,
+) -> MonitorEntry {
+    let parts: Vec<&str> = initial.split(',').map(str::trim).collect();
+    let output = tiny_entry(
+        parts.first().copied().unwrap_or(""),
+        "DP-1 / HDMI-A-1",
+        false,
+    );
+    output.set_width_chars(16);
+    let disabled = switch(parts.get(1).copied().unwrap_or("") == "disabled");
+    let mode = tiny_entry(
+        parts
+            .get(1)
+            .filter(|v| **v != "disabled")
+            .copied()
+            .unwrap_or("preferred"),
+        "1920x1080@144",
+        false,
+    );
+    mode.set_width_chars(18);
+    let position = tiny_entry(parts.get(2).copied().unwrap_or("0x0"), "0x0", false);
+    position.set_width_chars(10);
+    let scale = spin(
+        parts.get(3).and_then(|v| v.parse().ok()).unwrap_or(1.0),
+        0.25,
+        4.0,
+        0.25,
+    );
+    scale.set_digits(2);
+    let del = pill_delete_button();
+    let row_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(10)
+        .margin_bottom(10)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    row_box.append(&output);
+    row_box.append(&mode);
+    row_box.append(&position);
+    row_box.append(&scale);
+    row_box.append(
+        &gtk::Label::builder()
+            .label("off")
+            .css_classes(["dim-label"])
+            .build(),
+    );
+    row_box.append(&disabled);
+    row_box.append(&del);
+    let row = gtk::ListBoxRow::builder()
+        .child(&row_box)
+        .activatable(false)
+        .selectable(false)
+        .build();
+    let entry = MonitorEntry {
+        row: row.clone(),
+        output,
+        mode,
+        position,
+        scale,
+        disabled,
+    };
+    let list_d = list.clone();
+    let entries_d = entries.clone();
+    let row_d = row.clone();
+    del.connect_clicked(move |_| {
+        list_d.remove(&row_d);
+        entries_d.borrow_mut().retain(|e| e.row != row_d);
+    });
+    entry
+}
+
+fn make_monitor_builder(
+    title: &str,
+    initial: &[String],
+) -> (adw::PreferencesGroup, MonitorBuilder) {
+    let entries = Rc::new(RefCell::new(Vec::new()));
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .build();
+    let builder = MonitorBuilder {
+        list: list.clone(),
+        entries: entries.clone(),
+    };
+    builder.set_values(initial);
+    let add = gtk::Button::builder()
+        .icon_name("list-add-symbolic")
+        .tooltip_text("Add monitor")
+        .css_classes(["flat"])
+        .build();
+    let b = builder.clone();
+    add.connect_clicked(move |_| b.add_value(""));
+    let group = adw::PreferencesGroup::builder()
+        .title(title)
+        .description("Output, resolution/refresh, position, scale and disable toggle.")
+        .build();
+    group.set_header_suffix(Some(&add));
+    group.add(&list);
+    (group, builder)
+}
+
+#[derive(Clone)]
+struct WorkspaceEntry {
+    row: gtk::ListBoxRow,
+    workspace: gtk::Entry,
+    monitor: gtk::Entry,
+    name: gtk::Entry,
+    persistent: gtk::Switch,
+}
+impl WorkspaceEntry {
+    fn value(&self) -> Option<String> {
+        let ws = self.workspace.text().trim().to_string();
+        if ws.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "{}|{}|{}|{}",
+            ws,
+            self.monitor.text().trim(),
+            self.name.text().trim(),
+            if self.persistent.is_active() {
+                "true"
+            } else {
+                "false"
+            }
+        ))
+    }
+}
+#[derive(Clone)]
+struct WorkspaceBuilder {
+    list: gtk::ListBox,
+    entries: Rc<RefCell<Vec<WorkspaceEntry>>>,
+}
+impl WorkspaceBuilder {
+    fn values(&self) -> Vec<String> {
+        self.entries
+            .borrow()
+            .iter()
+            .filter_map(|e| e.value())
+            .collect()
+    }
+    fn set_values(&self, values: &[String]) {
+        self.entries.borrow_mut().clear();
+        clear_listbox(&self.list);
+        let source = if values.is_empty() {
+            vec![String::new()]
+        } else {
+            values.to_vec()
+        };
+        for v in source {
+            self.add_value(&v);
+        }
+    }
+    fn add_value(&self, value: &str) {
+        let entry = make_workspace_entry(value, self.list.clone(), self.entries.clone());
+        self.list.append(&entry.row);
+        self.entries.borrow_mut().push(entry);
+    }
+}
+fn make_workspace_entry(
+    initial: &str,
+    list: gtk::ListBox,
+    entries: Rc<RefCell<Vec<WorkspaceEntry>>>,
+) -> WorkspaceEntry {
+    let p: Vec<&str> = initial.split('|').map(str::trim).collect();
+    let workspace = tiny_entry(p.first().copied().unwrap_or(""), "1", false);
+    workspace.set_width_chars(8);
+    let monitor = tiny_entry(p.get(1).copied().unwrap_or(""), "monitor", false);
+    monitor.set_width_chars(14);
+    let name = tiny_entry(p.get(2).copied().unwrap_or(""), "name", true);
+    let persistent = switch(matches!(p.get(3).copied(), Some("true") | Some("1")));
+    let del = pill_delete_button();
+    let row_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(10)
+        .margin_bottom(10)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    row_box.append(&workspace);
+    row_box.append(&monitor);
+    row_box.append(&name);
+    row_box.append(
+        &gtk::Label::builder()
+            .label("persistent")
+            .css_classes(["dim-label"])
+            .build(),
+    );
+    row_box.append(&persistent);
+    row_box.append(&del);
+    let row = gtk::ListBoxRow::builder()
+        .child(&row_box)
+        .activatable(false)
+        .selectable(false)
+        .build();
+    let entry = WorkspaceEntry {
+        row: row.clone(),
+        workspace,
+        monitor,
+        name,
+        persistent,
+    };
+    let list_d = list.clone();
+    let entries_d = entries.clone();
+    let row_d = row.clone();
+    del.connect_clicked(move |_| {
+        list_d.remove(&row_d);
+        entries_d.borrow_mut().retain(|e| e.row != row_d);
+    });
+    entry
+}
+fn make_workspace_builder(
+    title: &str,
+    initial: &[String],
+) -> (adw::PreferencesGroup, WorkspaceBuilder) {
+    let entries = Rc::new(RefCell::new(Vec::new()));
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .build();
+    let builder = WorkspaceBuilder {
+        list: list.clone(),
+        entries: entries.clone(),
+    };
+    builder.set_values(initial);
+    let add = gtk::Button::builder()
+        .icon_name("list-add-symbolic")
+        .tooltip_text("Add workspace")
+        .css_classes(["flat"])
+        .build();
+    let b = builder.clone();
+    add.connect_clicked(move |_| b.add_value(""));
+    let group = adw::PreferencesGroup::builder()
+        .title(title)
+        .description("Workspace number, monitor, optional name and persistence.")
+        .build();
+    group.set_header_suffix(Some(&add));
+    group.add(&list);
+    (group, builder)
+}
+
+const MOUSE_ACTIONS: [&str; 4] = ["movewindow", "resizewindow", "togglefloating", "fullscreen"];
+#[derive(Clone)]
+struct MouseBindEntry {
+    row: gtk::ListBoxRow,
+    super_btn: gtk::ToggleButton,
+    shift_btn: gtk::ToggleButton,
+    ctrl_btn: gtk::ToggleButton,
+    alt_btn: gtk::ToggleButton,
+    button: gtk::DropDown,
+    action: gtk::DropDown,
+}
+impl MouseBindEntry {
+    fn value(&self) -> Option<String> {
+        let mods = selected_mods(
+            &self.super_btn,
+            &self.shift_btn,
+            &self.ctrl_btn,
+            &self.alt_btn,
+        );
+        if mods.is_empty() {
+            return None;
+        }
+        let buttons = [
+            "mouse:272",
+            "mouse:273",
+            "mouse:274",
+            "mouse:275",
+            "mouse:276",
+        ];
+        let btn = buttons
+            .get(self.button.selected() as usize)
+            .copied()
+            .unwrap_or("mouse:272");
+        let action = MOUSE_ACTIONS
+            .get(self.action.selected() as usize)
+            .copied()
+            .unwrap_or("movewindow");
+        Some(format!("{}, {}, {}", mods, btn, action))
+    }
+}
+#[derive(Clone)]
+struct MouseBindBuilder {
+    list: gtk::ListBox,
+    entries: Rc<RefCell<Vec<MouseBindEntry>>>,
+}
+impl MouseBindBuilder {
+    fn values(&self) -> Vec<String> {
+        self.entries
+            .borrow()
+            .iter()
+            .filter_map(|e| e.value())
+            .collect()
+    }
+    fn set_values(&self, values: &[String]) {
+        self.entries.borrow_mut().clear();
+        clear_listbox(&self.list);
+        let source = if values.is_empty() {
+            vec![String::new()]
+        } else {
+            values.to_vec()
+        };
+        for v in source {
+            self.add_value(&v);
+        }
+    }
+    fn add_value(&self, value: &str) {
+        let entry = make_mouse_bind_entry(value, self.list.clone(), self.entries.clone());
+        self.list.append(&entry.row);
+        self.entries.borrow_mut().push(entry);
+    }
+}
+fn make_mouse_bind_entry(
+    initial: &str,
+    list: gtk::ListBox,
+    entries: Rc<RefCell<Vec<MouseBindEntry>>>,
+) -> MouseBindEntry {
+    let p: Vec<&str> = initial.split(',').map(str::trim).collect();
+    let mods = mods_from_text(p.first().copied().unwrap_or("SUPER"));
+    let (super_btn, shift_btn, ctrl_btn, alt_btn, mods_box) = make_mod_buttons(&mods);
+    let buttons = gtk::StringList::new(
+        [
+            "mouse:272 left",
+            "mouse:273 right",
+            "mouse:274 middle",
+            "mouse:275 back",
+            "mouse:276 forward",
+        ]
+        .as_slice(),
+    );
+    let button_idx = match p.get(1).copied().unwrap_or("mouse:272") {
+        "mouse:273" => 1,
+        "mouse:274" => 2,
+        "mouse:275" => 3,
+        "mouse:276" => 4,
+        _ => 0,
+    };
+    let button = gtk::DropDown::builder()
+        .model(&buttons)
+        .selected(button_idx)
+        .build();
+    let actions = gtk::StringList::new(MOUSE_ACTIONS.as_slice());
+    let action_idx = MOUSE_ACTIONS
+        .iter()
+        .position(|a| Some(*a) == p.get(2).copied())
+        .unwrap_or(0) as u32;
+    let action = gtk::DropDown::builder()
+        .model(&actions)
+        .selected(action_idx)
+        .build();
+    let del = pill_delete_button();
+    let row_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(10)
+        .margin_bottom(10)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    row_box.append(&mods_box);
+    row_box.append(&button);
+    row_box.append(&action);
+    row_box.append(&del);
+    let row = gtk::ListBoxRow::builder()
+        .child(&row_box)
+        .activatable(false)
+        .selectable(false)
+        .build();
+    let entry = MouseBindEntry {
+        row: row.clone(),
+        super_btn,
+        shift_btn,
+        ctrl_btn,
+        alt_btn,
+        button,
+        action,
+    };
+    let list_d = list.clone();
+    let entries_d = entries.clone();
+    let row_d = row.clone();
+    del.connect_clicked(move |_| {
+        list_d.remove(&row_d);
+        entries_d.borrow_mut().retain(|e| e.row != row_d);
+    });
+    entry
+}
+fn make_mouse_bind_builder(
+    title: &str,
+    initial: &[String],
+) -> (adw::PreferencesGroup, MouseBindBuilder) {
+    let entries = Rc::new(RefCell::new(Vec::new()));
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .build();
+    let builder = MouseBindBuilder {
+        list: list.clone(),
+        entries: entries.clone(),
+    };
+    builder.set_values(initial);
+    let add = gtk::Button::builder()
+        .icon_name("list-add-symbolic")
+        .tooltip_text("Add mouse bind")
+        .css_classes(["flat"])
+        .build();
+    let b = builder.clone();
+    add.connect_clicked(move |_| b.add_value("SUPER, mouse:272, movewindow"));
+    let group = adw::PreferencesGroup::builder()
+        .title(title)
+        .description("Choose modifier, mouse button and action.")
+        .build();
+    group.set_header_suffix(Some(&add));
+    group.add(&list);
+    (group, builder)
+}
+
+const INPUT_SETTINGS: [&str; 7] = [
+    "repeat_rate",
+    "repeat_delay",
+    "numlock_by_default",
+    "follow_mouse",
+    "float_switch_override_focus",
+    "touchpad.scroll_factor",
+    "touchpad.disable_while_typing",
+];
+#[derive(Clone)]
+struct InputExtraEntry {
+    row: gtk::ListBoxRow,
+    setting: gtk::DropDown,
+    value: gtk::Entry,
+}
+impl InputExtraEntry {
+    fn value(&self) -> Option<String> {
+        let setting = INPUT_SETTINGS
+            .get(self.setting.selected() as usize)
+            .copied()
+            .unwrap_or("repeat_rate");
+        let val = self.value.text().trim().to_string();
+        if val.is_empty() {
+            return None;
+        }
+        let lua_val = if val == "true" || val == "false" || val.parse::<f64>().is_ok() {
+            val
+        } else {
+            format!("\"{}\"", lua_string(&val))
+        };
+        if let Some(child) = setting.strip_prefix("touchpad.") {
+            Some(format!(
+                "hl.config({{ input = {{ touchpad = {{ {} = {} }} }} }})",
+                child, lua_val
+            ))
+        } else {
+            Some(format!(
+                "hl.config({{ input = {{ {} = {} }} }})",
+                setting, lua_val
+            ))
+        }
+    }
+}
+#[derive(Clone)]
+struct InputExtraBuilder {
+    list: gtk::ListBox,
+    entries: Rc<RefCell<Vec<InputExtraEntry>>>,
+}
+impl InputExtraBuilder {
+    fn values(&self) -> Vec<String> {
+        self.entries
+            .borrow()
+            .iter()
+            .filter_map(|e| e.value())
+            .collect()
+    }
+    fn set_values(&self, values: &[String]) {
+        self.entries.borrow_mut().clear();
+        clear_listbox(&self.list);
+        let source = if values.is_empty() {
+            vec![String::new()]
+        } else {
+            values.to_vec()
+        };
+        for v in source {
+            let expanded = expand_input_extra_line(&v);
+            if expanded.is_empty() {
+                self.add_value(&v);
+            } else {
+                for item in expanded {
+                    self.add_value(&item);
+                }
+            }
+        }
+    }
+    fn add_value(&self, value: &str) {
+        let entry = make_input_extra_entry(value, self.list.clone(), self.entries.clone());
+        self.list.append(&entry.row);
+        self.entries.borrow_mut().push(entry);
+    }
+}
+fn lua_field_value(line: &str, field: &str) -> String {
+    let Some(after_field) = line.split(field).nth(1) else {
+        return String::new();
+    };
+    let Some(after_eq) = after_field.split('=').nth(1) else {
+        return String::new();
+    };
+    after_eq
+        .split([',', '}'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches('"')
+        .to_string()
+}
+
+fn expand_input_extra_line(line: &str) -> Vec<String> {
+    INPUT_SETTINGS
+        .iter()
+        .filter_map(|key| {
+            let plain = key.strip_prefix("touchpad.").unwrap_or(key);
+            if line.contains(plain) {
+                let val = lua_field_value(line, plain);
+                if val.is_empty() {
+                    None
+                } else {
+                    Some(format!("{} = {}", plain, val))
+                }
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn parse_input_extra(initial: &str) -> (&'static str, String) {
+    for key in INPUT_SETTINGS {
+        let plain = key.strip_prefix("touchpad.").unwrap_or(key);
+        if initial.contains(plain) {
+            return (key, lua_field_value(initial, plain));
+        }
+    }
+    ("repeat_rate", String::new())
+}
+fn make_input_extra_entry(
+    initial: &str,
+    list: gtk::ListBox,
+    entries: Rc<RefCell<Vec<InputExtraEntry>>>,
+) -> InputExtraEntry {
+    let (setting_name, value_str) = parse_input_extra(initial);
+    let model = gtk::StringList::new(INPUT_SETTINGS.as_slice());
+    let idx = INPUT_SETTINGS
+        .iter()
+        .position(|s| *s == setting_name)
+        .unwrap_or(0) as u32;
+    let setting = gtk::DropDown::builder().model(&model).selected(idx).build();
+    let value = tiny_entry(&value_str, "value", true);
+    let del = pill_delete_button();
+    let row_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(10)
+        .margin_bottom(10)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    row_box.append(&setting);
+    row_box.append(&value);
+    row_box.append(&del);
+    let row = gtk::ListBoxRow::builder()
+        .child(&row_box)
+        .activatable(false)
+        .selectable(false)
+        .build();
+    let entry = InputExtraEntry {
+        row: row.clone(),
+        setting,
+        value,
+    };
+    let list_d = list.clone();
+    let entries_d = entries.clone();
+    let row_d = row.clone();
+    del.connect_clicked(move |_| {
+        list_d.remove(&row_d);
+        entries_d.borrow_mut().retain(|e| e.row != row_d);
+    });
+    entry
+}
+fn make_input_extra_builder(
+    title: &str,
+    initial: &[String],
+) -> (adw::PreferencesGroup, InputExtraBuilder) {
+    let entries = Rc::new(RefCell::new(Vec::new()));
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .build();
+    let builder = InputExtraBuilder {
+        list: list.clone(),
+        entries: entries.clone(),
+    };
+    builder.set_values(initial);
+    let add = gtk::Button::builder()
+        .icon_name("list-add-symbolic")
+        .tooltip_text("Add input setting")
+        .css_classes(["flat"])
+        .build();
+    let b = builder.clone();
+    add.connect_clicked(move |_| b.add_value(""));
+    let group = adw::PreferencesGroup::builder()
+        .title(title)
+        .description("Extra input settings without writing Lua manually.")
+        .build();
+    group.set_header_suffix(Some(&add));
+    group.add(&list);
+    (group, builder)
+}
+
+const GESTURE_ACTIONS: [&str; 5] = [
+    "workspace",
+    "movefocus",
+    "resizewindow",
+    "movewindow",
+    "custom",
+];
+#[derive(Clone)]
+struct GestureEntry {
+    row: gtk::ListBoxRow,
+    fingers: gtk::SpinButton,
+    direction: gtk::DropDown,
+    action: gtk::DropDown,
+    value: gtk::Entry,
+}
+impl GestureEntry {
+    fn value(&self) -> Option<String> {
+        let dirs = ["horizontal", "vertical", "left", "right", "up", "down"];
+        let direction = dirs
+            .get(self.direction.selected() as usize)
+            .copied()
+            .unwrap_or("horizontal");
+        let action = GESTURE_ACTIONS
+            .get(self.action.selected() as usize)
+            .copied()
+            .unwrap_or("workspace");
+        let text = self.value.text();
+        let val = text.trim();
+        if action == "custom" {
+            if val.is_empty() {
+                return None;
+            }
+            return Some(val.to_string());
+        }
+        let value_part = if val.is_empty() {
+            String::new()
+        } else {
+            format!(", value = \"{}\"", lua_string(val))
+        };
+        Some(format!(
+            "hl.gesture({{ fingers = {}, direction = \"{}\", action = \"{}\"{} }})",
+            self.fingers.value() as u32,
+            direction,
+            action,
+            value_part
+        ))
+    }
+}
+#[derive(Clone)]
+struct GestureBuilder {
+    list: gtk::ListBox,
+    entries: Rc<RefCell<Vec<GestureEntry>>>,
+}
+impl GestureBuilder {
+    fn values(&self) -> Vec<String> {
+        self.entries
+            .borrow()
+            .iter()
+            .filter_map(|e| e.value())
+            .collect()
+    }
+    fn set_values(&self, values: &[String]) {
+        self.entries.borrow_mut().clear();
+        clear_listbox(&self.list);
+        let source = if values.is_empty() {
+            vec![String::new()]
+        } else {
+            values.to_vec()
+        };
+        for v in source {
+            self.add_value(&v);
+        }
+    }
+    fn add_value(&self, value: &str) {
+        let entry = make_gesture_entry(value, self.list.clone(), self.entries.clone());
+        self.list.append(&entry.row);
+        self.entries.borrow_mut().push(entry);
+    }
+}
+fn extract_between<'a>(s: &'a str, key: &str, default: &'a str) -> String {
+    let Some(after) = s.split(key).nth(1) else {
+        return default.to_string();
+    };
+    after
+        .split('=')
+        .nth(1)
+        .unwrap_or(default)
+        .trim()
+        .trim_matches(',')
+        .trim()
+        .trim_matches('}')
+        .trim()
+        .trim_matches('"')
+        .to_string()
+}
+fn make_gesture_entry(
+    initial: &str,
+    list: gtk::ListBox,
+    entries: Rc<RefCell<Vec<GestureEntry>>>,
+) -> GestureEntry {
+    let fingers = spin(
+        extract_between(initial, "fingers", "3")
+            .parse()
+            .unwrap_or(3.0),
+        2.0,
+        5.0,
+        1.0,
+    );
+    let dirs = ["horizontal", "vertical", "left", "right", "up", "down"];
+    let dir = extract_between(initial, "direction", "horizontal");
+    let dir_idx = dirs.iter().position(|d| *d == dir).unwrap_or(0) as u32;
+    let direction_model = gtk::StringList::new(dirs.as_slice());
+    let direction = gtk::DropDown::builder()
+        .model(&direction_model)
+        .selected(dir_idx)
+        .build();
+    let action_name = extract_between(initial, "action", "workspace");
+    let action_idx = GESTURE_ACTIONS
+        .iter()
+        .position(|a| *a == action_name)
+        .unwrap_or(
+            if initial.trim().starts_with("hl.") && !initial.contains("hl.gesture") {
+                4
+            } else {
+                0
+            },
+        ) as u32;
+    let action_model = gtk::StringList::new(GESTURE_ACTIONS.as_slice());
+    let action = gtk::DropDown::builder()
+        .model(&action_model)
+        .selected(action_idx)
+        .build();
+    let value = tiny_entry(
+        if action_idx == 4 { initial } else { "" },
+        "value / raw Lua when custom",
+        true,
+    );
+    let del = pill_delete_button();
+    let row_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(10)
+        .margin_bottom(10)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    row_box.append(&fingers);
+    row_box.append(&direction);
+    row_box.append(&action);
+    row_box.append(&value);
+    row_box.append(&del);
+    let row = gtk::ListBoxRow::builder()
+        .child(&row_box)
+        .activatable(false)
+        .selectable(false)
+        .build();
+    let entry = GestureEntry {
+        row: row.clone(),
+        fingers,
+        direction,
+        action,
+        value,
+    };
+    let list_d = list.clone();
+    let entries_d = entries.clone();
+    let row_d = row.clone();
+    del.connect_clicked(move |_| {
+        list_d.remove(&row_d);
+        entries_d.borrow_mut().retain(|e| e.row != row_d);
+    });
+    entry
+}
+fn make_gesture_builder(
+    title: &str,
+    initial: &[String],
+) -> (adw::PreferencesGroup, GestureBuilder) {
+    let entries = Rc::new(RefCell::new(Vec::new()));
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .build();
+    let builder = GestureBuilder {
+        list: list.clone(),
+        entries: entries.clone(),
+    };
+    builder.set_values(initial);
+    let add = gtk::Button::builder()
+        .icon_name("list-add-symbolic")
+        .tooltip_text("Add gesture")
+        .css_classes(["flat"])
+        .build();
+    let b = builder.clone();
+    add.connect_clicked(move |_| b.add_value(""));
+    let group = adw::PreferencesGroup::builder()
+        .title(title)
+        .description("Gesture rows with fingers, direction and action.")
+        .build();
+    group.set_header_suffix(Some(&add));
+    group.add(&list);
     (group, builder)
 }
 
@@ -985,7 +2075,11 @@ fn lua_visual_workspace_rules(lines: &[String]) -> String {
                 fields.push(format!("name = \"{v}\""));
             }
             if let Some(v) = p.get(3).filter(|v| !v.is_empty()) {
-                let val = if *v == "true" || *v == "1" { "true" } else { "false" };
+                let val = if *v == "true" || *v == "1" {
+                    "true"
+                } else {
+                    "false"
+                };
                 fields.push(format!("persistent = {val}"));
             }
             Some(format!("hl.workspace_rule({{ {} }})", fields.join(", ")))
@@ -1015,15 +2109,11 @@ fn lua_visual_window_rules(lines: &[String]) -> String {
                 let v = v.trim();
                 match k.trim() {
                     "float" if v == "true" || v == "1" => fields.push("float = true".to_string()),
-                    "center" if v == "true" || v == "1" => {
-                        fields.push("center = true".to_string())
-                    }
+                    "center" if v == "true" || v == "1" => fields.push("center = true".to_string()),
                     "size" if !v.is_empty() => {
                         fields.push(format!("size = \"{}\"", v.replace('x', " ")))
                     }
-                    "workspace" if !v.is_empty() => {
-                        fields.push(format!("workspace = \"{v}\""))
-                    }
+                    "workspace" if !v.is_empty() => fields.push(format!("workspace = \"{v}\"")),
                     "opacity" if !v.is_empty() => fields.push(format!("opacity = {v}")),
                     _ => {}
                 }
@@ -1143,12 +2233,14 @@ fn generate_lua(c: &HyprConfig) -> String {
     push_block!(default_app_keybind_lines(c).join("\n"));
     push_block!(lua_mouse_binds(&c.mouse_binds));
     push_block!(raw_lines(&c.keybinds));
-    push_block!(raw_lines_multi(&[
-        &c.animation_lines,
-        &c.decoration_lines,
-        &c.input_extra_lines,
-        &c.gesture_lines,
-    ][..]));
+    push_block!(raw_lines_multi(
+        &[
+            &c.animation_lines,
+            &c.decoration_lines,
+            &c.input_extra_lines,
+            &c.gesture_lines,
+        ][..]
+    ));
     push_block!(raw_lines(&c.custom_lines));
 
     let extra_block = if extra.is_empty() {
@@ -1944,6 +3036,366 @@ fn preset_config(name: &str, current: &HyprConfig) -> HyprConfig {
     c
 }
 
+const ANIMATION_LEAVES: [&str; 8] = [
+    "windows",
+    "windowsIn",
+    "windowsOut",
+    "border",
+    "borderangle",
+    "fade",
+    "workspaces",
+    "layers",
+];
+
+const ANIMATION_BEZIERS: [&str; 7] = [
+    "default",
+    "linear",
+    "easeOutQuint",
+    "easeInOutCubic",
+    "easeOutBack",
+    "myBezier",
+    "custom",
+];
+
+#[derive(Clone)]
+struct AnimationEntry {
+    row: gtk::ListBoxRow,
+    leaf: gtk::DropDown,
+    enabled: gtk::Switch,
+    speed: gtk::SpinButton,
+    bezier: gtk::DropDown,
+    custom_bezier: gtk::Entry,
+}
+
+impl AnimationEntry {
+    fn value(&self) -> Option<String> {
+        let leaf = ANIMATION_LEAVES
+            .get(self.leaf.selected() as usize)
+            .copied()
+            .unwrap_or("windows");
+
+        let selected_bezier = ANIMATION_BEZIERS
+            .get(self.bezier.selected() as usize)
+            .copied()
+            .unwrap_or("default");
+
+        let custom = self.custom_bezier.text();
+        let custom = custom.trim();
+
+        let bezier = if selected_bezier == "custom" {
+            if custom.is_empty() {
+                "default"
+            } else {
+                custom
+            }
+        } else {
+            selected_bezier
+        };
+
+        Some(format!(
+            "hl.animation({{ leaf = \"{}\", enabled = {}, speed = {}, bezier = \"{}\" }})",
+            leaf,
+            if self.enabled.is_active() {
+                "true"
+            } else {
+                "false"
+            },
+            self.speed.value() as u32,
+            lua_string(bezier)
+        ))
+    }
+}
+
+#[derive(Clone)]
+struct AnimationBuilder {
+    list: gtk::ListBox,
+    entries: Rc<RefCell<Vec<AnimationEntry>>>,
+}
+
+impl AnimationBuilder {
+    fn values(&self) -> Vec<String> {
+        self.entries
+            .borrow()
+            .iter()
+            .filter_map(|entry| entry.value())
+            .collect()
+    }
+
+    fn set_values(&self, values: &[String]) {
+        self.entries.borrow_mut().clear();
+        clear_listbox(&self.list);
+
+        let source = if values.is_empty() {
+            vec![
+                "hl.animation({ leaf = \"windows\", enabled = true, speed = 7, bezier = \"default\" })".to_string(),
+                "hl.animation({ leaf = \"workspaces\", enabled = true, speed = 6, bezier = \"default\" })".to_string(),
+            ]
+        } else {
+            values.to_vec()
+        };
+
+        for value in source {
+            self.add_value(&value);
+        }
+    }
+
+    fn add_value(&self, value: &str) {
+        let entry = make_animation_entry(value, self.list.clone(), self.entries.clone());
+        self.list.append(&entry.row);
+        self.entries.borrow_mut().push(entry);
+    }
+}
+
+fn anim_value(line: &str, key: &str, default: &str) -> String {
+    let Some(after_key) = line.split(key).nth(1) else {
+        return default.to_string();
+    };
+
+    let Some(after_eq) = after_key.split('=').nth(1) else {
+        return default.to_string();
+    };
+
+    after_eq
+        .split([',', '}'])
+        .next()
+        .unwrap_or(default)
+        .trim()
+        .trim_matches('"')
+        .to_string()
+}
+
+fn parse_animation_line(initial: &str) -> (String, bool, f64, String) {
+    let leaf = anim_value(initial, "leaf", "windows");
+    let enabled = anim_value(initial, "enabled", "true") != "false";
+    let speed = anim_value(initial, "speed", "7")
+        .parse::<f64>()
+        .unwrap_or(7.0);
+    let bezier = anim_value(initial, "bezier", "default");
+
+    (leaf, enabled, speed, bezier)
+}
+
+fn make_animation_entry(
+    initial: &str,
+    list: gtk::ListBox,
+    entries: Rc<RefCell<Vec<AnimationEntry>>>,
+) -> AnimationEntry {
+    let (leaf_value, enabled_value, speed_value, bezier_value) = parse_animation_line(initial);
+
+    let leaf_model = gtk::StringList::new(ANIMATION_LEAVES.as_slice());
+    let leaf_idx = ANIMATION_LEAVES
+        .iter()
+        .position(|item| *item == leaf_value)
+        .unwrap_or(0) as u32;
+
+    let leaf = gtk::DropDown::builder()
+        .model(&leaf_model)
+        .selected(leaf_idx)
+        .valign(gtk::Align::Center)
+        .build();
+
+    let enabled = switch(enabled_value);
+
+    let speed = spin(speed_value, 1.0, 20.0, 1.0);
+    speed.set_digits(0);
+
+    let bezier_model = gtk::StringList::new(ANIMATION_BEZIERS.as_slice());
+    let bezier_idx = ANIMATION_BEZIERS
+        .iter()
+        .position(|item| *item == bezier_value)
+        .unwrap_or(6) as u32;
+
+    let bezier = gtk::DropDown::builder()
+        .model(&bezier_model)
+        .selected(bezier_idx)
+        .valign(gtk::Align::Center)
+        .build();
+
+    let custom_bezier = tiny_entry(
+        if bezier_idx == 6 { &bezier_value } else { "" },
+        "custom bezier",
+        true,
+    );
+    custom_bezier.set_visible(bezier_idx == 6);
+
+    let custom_bezier_visibility = custom_bezier.clone();
+    bezier.connect_selected_notify(move |drop| {
+        let selected = ANIMATION_BEZIERS
+            .get(drop.selected() as usize)
+            .copied()
+            .unwrap_or("default");
+
+        custom_bezier_visibility.set_visible(selected == "custom");
+    });
+
+    let del = pill_delete_button();
+
+    let row_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(10)
+        .margin_bottom(10)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+
+    row_box.append(
+        &gtk::Label::builder()
+            .label("target")
+            .css_classes(["dim-label"])
+            .build(),
+    );
+    row_box.append(&leaf);
+
+    row_box.append(
+        &gtk::Label::builder()
+            .label("enabled")
+            .css_classes(["dim-label"])
+            .build(),
+    );
+    row_box.append(&enabled);
+
+    row_box.append(
+        &gtk::Label::builder()
+            .label("speed")
+            .css_classes(["dim-label"])
+            .build(),
+    );
+    row_box.append(&speed);
+
+    row_box.append(
+        &gtk::Label::builder()
+            .label("curve")
+            .css_classes(["dim-label"])
+            .build(),
+    );
+    row_box.append(&bezier);
+    row_box.append(&custom_bezier);
+
+    row_box.append(&del);
+
+    let row = gtk::ListBoxRow::builder()
+        .child(&row_box)
+        .activatable(false)
+        .selectable(false)
+        .build();
+
+    let entry = AnimationEntry {
+        row: row.clone(),
+        leaf,
+        enabled,
+        speed,
+        bezier,
+        custom_bezier,
+    };
+
+    let list_d = list.clone();
+    let entries_d = entries.clone();
+    let row_d = row.clone();
+
+    del.connect_clicked(move |_| {
+        list_d.remove(&row_d);
+        entries_d.borrow_mut().retain(|entry| entry.row != row_d);
+    });
+
+    entry
+}
+
+fn make_animation_builder(
+    title: &str,
+    initial: &[String],
+) -> (adw::PreferencesGroup, AnimationBuilder) {
+    let entries = Rc::new(RefCell::new(Vec::new()));
+
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .build();
+
+    let builder = AnimationBuilder {
+        list: list.clone(),
+        entries: entries.clone(),
+    };
+
+    builder.set_values(initial);
+
+    let add = gtk::Button::builder()
+        .icon_name("list-add-symbolic")
+        .tooltip_text("Add animation")
+        .css_classes(["flat"])
+        .build();
+
+    let fast = gtk::Button::builder()
+        .label("Fast")
+        .css_classes(["flat", "pill"])
+        .build();
+
+    let smooth = gtk::Button::builder()
+        .label("Smooth")
+        .css_classes(["flat", "pill"])
+        .build();
+
+    let snappy = gtk::Button::builder()
+        .label("Snappy")
+        .css_classes(["flat", "pill"])
+        .build();
+
+    let header = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .build();
+
+    header.append(&fast);
+    header.append(&smooth);
+    header.append(&snappy);
+    header.append(&add);
+
+    let builder_add = builder.clone();
+    add.connect_clicked(move |_| {
+        builder_add.add_value(
+            "hl.animation({ leaf = \"windows\", enabled = true, speed = 7, bezier = \"default\" })",
+        );
+    });
+
+    let builder_fast = builder.clone();
+    fast.connect_clicked(move |_| {
+        builder_fast.set_values(&[
+            "hl.animation({ leaf = \"windows\", enabled = true, speed = 10, bezier = \"easeOutQuint\" })".to_string(),
+            "hl.animation({ leaf = \"workspaces\", enabled = true, speed = 9, bezier = \"easeOutQuint\" })".to_string(),
+            "hl.animation({ leaf = \"fade\", enabled = true, speed = 8, bezier = \"default\" })".to_string(),
+        ]);
+    });
+
+    let builder_smooth = builder.clone();
+    smooth.connect_clicked(move |_| {
+        builder_smooth.set_values(&[
+            "hl.animation({ leaf = \"windows\", enabled = true, speed = 6, bezier = \"easeInOutCubic\" })".to_string(),
+            "hl.animation({ leaf = \"workspaces\", enabled = true, speed = 5, bezier = \"easeInOutCubic\" })".to_string(),
+            "hl.animation({ leaf = \"fade\", enabled = true, speed = 5, bezier = \"default\" })".to_string(),
+        ]);
+    });
+
+    let builder_snappy = builder.clone();
+    snappy.connect_clicked(move |_| {
+        builder_snappy.set_values(&[
+            "hl.animation({ leaf = \"windows\", enabled = true, speed = 12, bezier = \"easeOutBack\" })".to_string(),
+            "hl.animation({ leaf = \"windowsIn\", enabled = true, speed = 10, bezier = \"easeOutBack\" })".to_string(),
+            "hl.animation({ leaf = \"windowsOut\", enabled = true, speed = 9, bezier = \"default\" })".to_string(),
+            "hl.animation({ leaf = \"workspaces\", enabled = true, speed = 8, bezier = \"easeOutBack\" })".to_string(),
+        ]);
+    });
+
+    let group = adw::PreferencesGroup::builder()
+        .title(title)
+        .description("Build animation rows visually instead of writing Lua manually.")
+        .build();
+
+    group.set_header_suffix(Some(&header));
+    group.add(&list);
+
+    (group, builder)
+}
+
 fn main() {
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() > 1 {
@@ -2289,18 +3741,8 @@ fn build_ui(app: &adw::Application) {
         "Example: waybar",
         &config.exec_once_commands,
     );
-    let (group_env, env_rows, _) = make_text_rows(
-        "Environment variables",
-        "Hyprland env lines.",
-        "Example: XCURSOR_SIZE,24",
-        &config.env_vars,
-    );
-    let (group_monitors, monitor_rows, _) = make_text_rows(
-        "Monitors",
-        "Hyprland monitor lines. Use auto-detect or write manually.",
-        "Example: DP-1,1920x1080@144,0x0,1",
-        &config.monitor_rules,
-    );
+    let (group_env, env_rows) = make_env_builder("Environment variables", &config.env_vars);
+    let (group_monitors, monitor_rows) = make_monitor_builder("Monitors", &config.monitor_rules);
     let detect_monitors_btn = gtk::Button::builder()
         .icon_name("list-add-symbolic")
         .tooltip_text("Auto-detect monitors")
@@ -2314,12 +3756,8 @@ fn build_ui(app: &adw::Application) {
     detect_monitor_row.add_suffix(&detect_monitors_btn);
     group_monitors.add(&detect_monitor_row);
 
-    let (group_visual_workspaces, visual_workspace_rows, _) = make_text_rows(
-        "Workspace builder",
-        "Visual format: number|monitor|name|persistent",
-        "Example: 1|DP-1|dev|true",
-        &config.visual_workspaces,
-    );
+    let (group_visual_workspaces, visual_workspace_rows) =
+        make_workspace_builder("Workspace builder", &config.visual_workspaces);
     let (group_workspaces, workspace_rows, _) = make_text_rows(
         "Raw workspaces",
         "Raw Lua workspace rule lines.",
@@ -2360,36 +3798,20 @@ fn build_ui(app: &adw::Application) {
         "Example: hl.bind(\"SUPER + Return\", hl.dsp.exec_cmd(\"kitty\"))",
         &config.keybinds,
     );
-    let (group_mouse_binds, mouse_bind_rows, _) = make_text_rows(
-        "Mouse binds",
-        "Hyprland bindm lines.",
-        "Example: SUPER, mouse:272, movewindow",
-        &config.mouse_binds,
-    );
-    let (group_animation_lines, animation_rows, _) = make_text_rows(
-        "Animations",
-        "Lua hl.animation / hl.curve lines.",
-        "Example: hl.animation({ leaf = \"windows\", enabled = true, speed = 7, bezier = \"default\" })",
-        &config.animation_lines,
-    );
+    let (group_mouse_binds, mouse_bind_rows) =
+        make_mouse_bind_builder("Mouse binds", &config.mouse_binds);
+    let (group_animation_lines, animation_builder) =
+        make_animation_builder("Advanced animations", &config.animation_lines);
     let (group_decoration_lines, decoration_rows, _) = make_text_rows(
         "Decoration extras",
         "Extra hl.config({ decoration = { ... } }) lines.",
         "Example: hl.config({ decoration = { dim_inactive = true, dim_strength = 0.5 } })",
         &config.decoration_lines,
     );
-    let (group_input_extra_lines, input_extra_rows, _) = make_text_rows(
-        "Input extras",
-        "Extra hl.config({ input = { ... } }) lines.",
-        "Example: hl.config({ input = { repeat_rate = 35, repeat_delay = 250 } })",
-        &config.input_extra_lines,
-    );
-    let (group_gesture_lines, gesture_rows, _) = make_text_rows(
-        "Gestures",
-        "hl.gesture / hl.device lines.",
-        "Example: hl.gesture({ fingers = 3, direction = \"horizontal\", action = \"workspace\" })",
-        &config.gesture_lines,
-    );
+    let (group_input_extra_lines, input_extra_rows) =
+        make_input_extra_builder("Input extras", &config.input_extra_lines);
+    let (group_gesture_lines, gesture_rows) =
+        make_gesture_builder("Gestures", &config.gesture_lines);
     let (group_custom, custom_rows, _) = make_text_rows(
         "Custom lines",
         "Raw Lua lines appended at the end of the generated file.",
@@ -2520,9 +3942,7 @@ fn build_ui(app: &adw::Application) {
     logs_btn.set_valign(gtk::Align::Center);
     logs_row.add_suffix(&logs_btn);
 
-    let group_advanced_actions = adw::PreferencesGroup::builder()
-        .title("Actions")
-        .build();
+    let group_advanced_actions = adw::PreferencesGroup::builder().title("Actions").build();
     group_advanced_actions.add(&preview_row);
     group_advanced_actions.add(&restore_bak_row);
     group_advanced_actions.add(&rollback_row);
@@ -2549,15 +3969,63 @@ fn build_ui(app: &adw::Application) {
         .reveal_child(true)
         .build();
 
-    add_sidebar_item(&sidebar_list, &stack, &sidebar_revealer, "General", "general");
-    add_sidebar_item(&sidebar_list, &stack, &sidebar_revealer, "Appearance", "appearance");
+    add_sidebar_item(
+        &sidebar_list,
+        &stack,
+        &sidebar_revealer,
+        "General",
+        "general",
+    );
+    add_sidebar_item(
+        &sidebar_list,
+        &stack,
+        &sidebar_revealer,
+        "Appearance",
+        "appearance",
+    );
     add_sidebar_item(&sidebar_list, &stack, &sidebar_revealer, "Input", "input");
-    add_sidebar_item(&sidebar_list, &stack, &sidebar_revealer, "Startup", "startup");
-    add_sidebar_item(&sidebar_list, &stack, &sidebar_revealer, "Monitors", "monitors");
-    add_sidebar_item(&sidebar_list, &stack, &sidebar_revealer, "Workspaces", "workspaces");
-    add_sidebar_item(&sidebar_list, &stack, &sidebar_revealer, "Window Rules", "window-rules");
-    add_sidebar_item(&sidebar_list, &stack, &sidebar_revealer, "Keybinds", "keybinds");
-    add_sidebar_item(&sidebar_list, &stack, &sidebar_revealer, "Advanced", "advanced");
+    add_sidebar_item(
+        &sidebar_list,
+        &stack,
+        &sidebar_revealer,
+        "Startup",
+        "startup",
+    );
+    add_sidebar_item(
+        &sidebar_list,
+        &stack,
+        &sidebar_revealer,
+        "Monitors",
+        "monitors",
+    );
+    add_sidebar_item(
+        &sidebar_list,
+        &stack,
+        &sidebar_revealer,
+        "Workspaces",
+        "workspaces",
+    );
+    add_sidebar_item(
+        &sidebar_list,
+        &stack,
+        &sidebar_revealer,
+        "Window Rules",
+        "window-rules",
+    );
+    add_sidebar_item(
+        &sidebar_list,
+        &stack,
+        &sidebar_revealer,
+        "Keybinds",
+        "keybinds",
+    );
+    add_sidebar_item(
+        &sidebar_list,
+        &stack,
+        &sidebar_revealer,
+        "Advanced",
+        "advanced",
+    );
 
     let sidebar_title = gtk::Label::builder()
         .label("Hypr Config")
@@ -2653,7 +4121,7 @@ fn build_ui(app: &adw::Application) {
         let visual_keybind_rows = visual_keybind_rows.clone();
         let keybind_rows = keybind_rows.clone();
         let mouse_bind_rows = mouse_bind_rows.clone();
-        let animation_rows = animation_rows.clone();
+        let animation_builder = animation_builder.clone();
         let decoration_rows = decoration_rows.clone();
         let input_extra_rows = input_extra_rows.clone();
         let gesture_rows = gesture_rows.clone();
@@ -2715,7 +4183,7 @@ fn build_ui(app: &adw::Application) {
                 wallpaper_path: wallpaper_path.text().to_string(),
                 wallpaper_backend: wallpaper_backend.text().to_string(),
                 wallpaper_mode: wallpaper_mode.text().to_string(),
-                animation_lines: animation_rows.values(),
+                animation_lines: animation_builder.values(),
                 decoration_lines: decoration_rows.values(),
                 input_extra_lines: input_extra_rows.values(),
                 gesture_lines: gesture_rows.values(),
@@ -2857,7 +4325,7 @@ fn build_ui(app: &adw::Application) {
         if rules.is_empty() {
             overlay_monitors.add_toast(adw::Toast::new("No monitors detected"));
         } else {
-            monitor_rows_detect.set_values(&rules, "Example: DP-1,1920x1080@144,0x0,1");
+            monitor_rows_detect.set_values(&rules);
             overlay_monitors.add_toast(adw::Toast::new("Monitor rules detected"));
         }
     });
@@ -2909,7 +4377,7 @@ fn build_ui(app: &adw::Application) {
         let visual_keybind_rows = visual_keybind_rows.clone();
         let keybind_rows = keybind_rows.clone();
         let mouse_bind_rows = mouse_bind_rows.clone();
-        let animation_rows = animation_rows.clone();
+        let animation_builder = animation_builder.clone();
         let decoration_rows = decoration_rows.clone();
         let input_extra_rows = input_extra_rows.clone();
         let gesture_rows = gesture_rows.clone();
@@ -2949,9 +4417,9 @@ fn build_ui(app: &adw::Application) {
             startup_rows.set_values(&cfg.startup_commands, "Example: waybar");
             exec_rows.set_values(&cfg.exec_commands, "Example: nm-applet");
             exec_once_rows.set_values(&cfg.exec_once_commands, "Example: waybar");
-            env_rows.set_values(&cfg.env_vars, "Example: XCURSOR_SIZE,24");
-            monitor_rows.set_values(&cfg.monitor_rules, "Example: DP-1,1920x1080@144,0x0,1");
-            visual_workspace_rows.set_values(&cfg.visual_workspaces, "Example: 1|DP-1|dev|true");
+            env_rows.set_values(&cfg.env_vars);
+            monitor_rows.set_values(&cfg.monitor_rules);
+            visual_workspace_rows.set_values(&cfg.visual_workspaces);
             workspace_rows.set_values(
                 &cfg.workspace_rules,
                 "Example: 1, monitor:DP-1, persistent:true",
@@ -2963,7 +4431,7 @@ fn build_ui(app: &adw::Application) {
             window_rule_rows.set_values(&cfg.window_rules, "Example: float,class:^(firefox)$");
             visual_keybind_rows.set_values(&cfg.visual_keybinds);
             keybind_rows.set_values(&cfg.keybinds, "Example: SUPER, Return, exec, kitty");
-            mouse_bind_rows.set_values(&cfg.mouse_binds, "Example: SUPER, mouse:272, movewindow");
+            mouse_bind_rows.set_values(&cfg.mouse_binds);
             default_terminal.set_text(&cfg.default_terminal);
             default_browser.set_text(&cfg.default_browser);
             default_file_manager.set_text(&cfg.default_file_manager);
@@ -2971,13 +4439,10 @@ fn build_ui(app: &adw::Application) {
             wallpaper_path.set_text(&cfg.wallpaper_path);
             wallpaper_backend.set_text(&cfg.wallpaper_backend);
             wallpaper_mode.set_text(&cfg.wallpaper_mode);
-            animation_rows.set_values(
-                &cfg.animation_lines,
-                "Example: animation = windows, 1, 7, default",
-            );
+            animation_builder.set_values(&cfg.animation_lines);
             decoration_rows.set_values(&cfg.decoration_lines, "Example: dim_inactive = true");
-            input_extra_rows.set_values(&cfg.input_extra_lines, "Example: repeat_rate = 35");
-            gesture_rows.set_values(&cfg.gesture_lines, "Example: workspace_swipe = true");
+            input_extra_rows.set_values(&cfg.input_extra_lines);
+            gesture_rows.set_values(&cfg.gesture_lines);
             custom_rows.set_values(&cfg.custom_lines, "Example: exec-once = waybar");
             logo_sw.set_active(cfg.disable_hyprland_logo);
         }
