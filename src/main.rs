@@ -109,9 +109,7 @@ impl Default for HyprConfig {
             input_extra_lines: vec![
                 "hl.config({ input = { repeat_rate = 35, repeat_delay = 250, numlock_by_default = true } })".to_string(),
             ],
-            gesture_lines: vec![
-                "hl.gesture({ fingers = 3, direction = \"horizontal\", action = \"workspace\" })".to_string(),
-            ],
+            gesture_lines: vec![],
             custom_lines: vec![],
         }
     }
@@ -585,7 +583,7 @@ fn make_text_rows(
     let add_btn = gtk::Button::builder()
         .icon_name("list-add-symbolic")
         .tooltip_text("Add row")
-        .css_classes(["add-button", "suggested-action", "pill"])
+        .css_classes(["flat"])
         .valign(gtk::Align::Center)
         .build();
 
